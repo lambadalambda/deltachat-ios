@@ -30,7 +30,7 @@ public class ContactCardCell: BaseMessageCell, ReusableCell {
     }
 
     override func update(dcContext: DcContext, msg: DcMsg, messageStyle: UIRectCorner, showAvatar: Bool, showName: Bool, showViewCount: Bool, searchText: String? = nil, highlight: Bool) {
-        if let text = msg.text, !text.isEmpty {
+        if let text = effectiveMessageText(for: msg), !text.isEmpty {
             messageLabel.text = text
             spacerHeight?.isActive = true
         } else {

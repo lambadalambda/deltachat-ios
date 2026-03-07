@@ -43,7 +43,7 @@ public class AudioMessageCell: BaseMessageCell, ReusableCell {
 
     override func update(dcContext: DcContext, msg: DcMsg, messageStyle: UIRectCorner, showAvatar: Bool, showName: Bool, showViewCount: Bool, searchText: String? = nil, highlight: Bool) {
         messageId = msg.id
-        if let text = msg.text {
+        if let text = effectiveMessageText(for: msg) {
             mainContentView.spacing = text.isEmpty ? 0 : 8
             messageLabel.text = text
         } else {

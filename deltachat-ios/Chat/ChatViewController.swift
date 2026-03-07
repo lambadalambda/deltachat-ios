@@ -16,6 +16,8 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
     private var isVisibleToUser: Bool = false
     private var reactionMessageId: Int?
     private var contextMenuVisible = false
+    private var expandedHtmlMessageTextById: [Int: String] = [:]
+    private var expandingHtmlMessageIds: Set<Int> = []
 
     private lazy var draft: DraftModel = {
         return DraftModel(dcContext: dcContext, chatId: chatId)
@@ -629,6 +631,10 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
 
         cell.baseDelegate = self
         cell.showSelectionBackground(tableView.isEditing)
+        cell.configureHtmlExpansion(
+            expandedText: expandedHtmlMessageTextById[message.id],
+            isExpanding: expandingHtmlMessageIds.contains(message.id)
+        )
         cell.update(dcContext: dcContext,
                     msg: message,
                     messageStyle: configureMessageStyle(for: message, at: indexPath),
@@ -940,6 +946,7 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
             return refreshMessagesAfterEditing = true
         }
         messages = dcContext.getChatMsgsAndTimestamps(chatId: chatId, flags: DC_GCM_ADDDAYMARKER).reversed()
+        pruneExpandedHtmlMessageState()
         reloadData()
         showEmptyStateView(messages.isEmpty)
     }
@@ -961,8 +968,15 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
             msgs.insert((Int(DC_MSG_ID_MARKER1), 0), at: index)
         }
         self.messages = msgs.reversed()
+        pruneExpandedHtmlMessageState()
         self.showEmptyStateView(self.messages.isEmpty)
         self.reloadData()
+    }
+
+    private func pruneExpandedHtmlMessageState() {
+        let visibleMessageIds = Set(messages.map(\.id))
+        expandedHtmlMessageTextById = expandedHtmlMessageTextById.filter { visibleMessageIds.contains($0.key) }
+        expandingHtmlMessageIds = Set(expandingHtmlMessageIds.filter { visibleMessageIds.contains($0) })
     }
 
     private func canReply(to message: DcMsg) -> Bool {
@@ -1999,7 +2013,7 @@ extension ChatViewController {
                             UIPasteboard.general.string = link
                         })
                     )
-                } else if let text = message.text, !text.isEmpty {
+                } else if let text = displayedMessageText(for: message), !text.isEmpty {
                     let copyTitle = message.file == nil ? "global_menu_edit_copy_desktop" : "menu_copy_text_to_clipboard"
                     children.append(
                         UIAction.menuAction(localizationKey: copyTitle, systemImageName: "doc.on.doc", with: messageId, action: copyTextToClipboard)
@@ -2199,6 +2213,47 @@ extension ChatViewController {
         view.image = UIImage(named: traitCollection.userInterfaceStyle == .light ? "background_light" : "background_dark")
     }
 
+    private func displayedMessageText(for message: DcMsg) -> String? {
+        expandedHtmlMessageTextById[message.id] ?? message.text
+    }
+
+    private func reloadRow(for messageId: Int) {
+        guard let row = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        guard row < tableView.numberOfRows(inSection: 0) else { return }
+
+        let indexPath = IndexPath(row: row, section: 0)
+        tableView.reloadRows(at: [indexPath], with: .none)
+    }
+
+    private func expandHtmlMessageInline(messageId: Int) {
+        if expandedHtmlMessageTextById[messageId] != nil || expandingHtmlMessageIds.contains(messageId) {
+            return
+        }
+
+        expandingHtmlMessageIds.insert(messageId)
+        reloadRow(for: messageId)
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+
+            let html = dcContext.getMsgHtml(msgId: messageId)
+            let expandedText = HtmlMessageTextExtractor.extractText(from: html)
+
+            DispatchQueue.main.async {
+                self.expandingHtmlMessageIds.remove(messageId)
+
+                guard !expandedText.isEmpty else {
+                    logger.error("show_full_message failed for message \(messageId)")
+                    self.reloadRow(for: messageId)
+                    return
+                }
+
+                self.expandedHtmlMessageTextById[messageId] = expandedText
+                self.reloadRow(for: messageId)
+            }
+        }
+    }
+
     private func copyTextToClipboard(ids: [Int]) {
         var stringsToCopy = ""
         if ids.count > 1 {
@@ -2207,7 +2262,7 @@ extension ChatViewController {
             for id in sortedIds {
                 let msg = self.dcContext.getMessage(id: id)
                 var textToCopy: String?
-                if msg.type == DC_MSG_TEXT, let msgText = msg.text {
+                if msg.type == DC_MSG_TEXT, let msgText = displayedMessageText(for: msg) {
                     textToCopy = msgText
                 } else if let msgSummary = msg.summary(chars: 10000000) {
                     textToCopy = msgSummary
@@ -2228,7 +2283,7 @@ extension ChatViewController {
             }
         } else {
             let msg = self.dcContext.getMessage(id: ids[0])
-            if msg.type == DC_MSG_TEXT, let msgText = msg.text {
+            if msg.type == DC_MSG_TEXT, let msgText = displayedMessageText(for: msg) {
                 stringsToCopy.append("\(msgText)")
             } else if let msgSummary = msg.summary(chars: 10000000) {
                 stringsToCopy.append("\(msgSummary)")
@@ -2255,9 +2310,10 @@ extension ChatViewController: BaseMessageCellDelegate {
             dcContext.downloadFullMessage(id: msg.id)
         } else if msg.type == DC_MSG_WEBXDC {
             showWebxdcViewFor(message: msg)
+        } else if msg.hasHtml {
+            expandHtmlMessageInline(messageId: msg.id)
         } else {
-            let fullMessageViewController = FullMessageViewController(dcContext: dcContext, messageId: msg.id, isContactRequest: dcChat.isContactRequest)
-            navigationController?.pushViewController(fullMessageViewController, animated: true)
+            logger.info("Ignoring message action button tap without matching action")
         }
     }
 
@@ -2859,5 +2915,56 @@ extension ChatViewController: AppPickerViewControllerDelegate {
         configureDraftArea(draft: draft)
         focusInputTextView()
         FileHelper.deleteFileAsync(atPath: url.relativePath)
+    }
+}
+
+enum HtmlMessageTextExtractor {
+    static func extractText(from html: String) -> String {
+        let sanitizedHtml = stripUnsafeTags(in: html)
+
+        guard let data = sanitizedHtml.data(using: .utf8) else {
+            return normalizeText(sanitizedHtml)
+        }
+
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+
+        if let attributedText = try? NSAttributedString(
+            data: data,
+            options: options,
+            documentAttributes: nil
+        ) {
+            return normalizeText(attributedText.string)
+        }
+
+        let fallbackText = sanitizedHtml.replacingOccurrences(
+            of: "<[^>]+>",
+            with: " ",
+            options: .regularExpression
+        )
+        return normalizeText(fallbackText)
+    }
+
+    private static func stripUnsafeTags(in html: String) -> String {
+        html.replacingOccurrences(
+            of: "<\\s*(script|style|noscript|template)\\b[^>]*>[\\s\\S]*?<\\s*/\\s*\\1\\s*>",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+    }
+
+    private static func normalizeText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\u{2028}", with: "\n")
+            .replacingOccurrences(of: "\u{2029}", with: "\n")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[ \\t]*\\n[ \\t]*", with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

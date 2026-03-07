@@ -201,6 +201,8 @@ public class BaseMessageCell: UITableViewCell {
     private var dcContextId: Int?
     private var dcMsgId: Int?
     var a11yDcType: String?
+    private var expandedHtmlMessageText: String?
+    private var isExpandingHtmlMessage = false
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
 
@@ -320,6 +322,19 @@ public class BaseMessageCell: UITableViewCell {
         if !isHandled, let tableView = self.superview as? UITableView, let indexPath = tableView.indexPath(for: self) {
             self.baseDelegate?.textTapped(indexPath: indexPath)
         }
+    }
+
+    func configureHtmlExpansion(expandedText: String?, isExpanding: Bool) {
+        expandedHtmlMessageText = expandedText
+        isExpandingHtmlMessage = isExpanding
+    }
+
+    func effectiveMessageText(for msg: DcMsg) -> String? {
+        expandedHtmlMessageText ?? msg.text
+    }
+
+    func shouldShowHtmlActionButton(for msg: DcMsg) -> Bool {
+        msg.hasHtml && expandedHtmlMessageText == nil
     }
 
     @objc func onAvatarTapped() {
@@ -455,8 +470,10 @@ public class BaseMessageCell: UITableViewCell {
 
         gotoOriginalButton.isHidden = msg.originalMessageId == 0
 
+        actionButton.isEnabled = true
+
         let downloadState = msg.downloadState
-        let hasHtml = msg.hasHtml
+        let shouldShowHtmlActionButton = shouldShowHtmlActionButton(for: msg)
         let hasWebxdc =  msg.type == DC_MSG_WEBXDC
         
         switch downloadState {
@@ -471,8 +488,9 @@ public class BaseMessageCell: UITableViewCell {
             actionButton.setTitle(String.localized("downloading"), for: .normal)
             isActionButtonHidden = false
         default:
-            if hasHtml {
-                actionButton.setTitle(String.localized("show_full_message"), for: .normal)
+            if shouldShowHtmlActionButton {
+                actionButton.isEnabled = !isExpandingHtmlMessage
+                actionButton.setTitle(String.localized(isExpandingHtmlMessage ? "downloading" : "show_full_message"), for: .normal)
                 isActionButtonHidden = false
             } else if hasWebxdc {
                 actionButton.setTitle(String.localized("start_app"), for: .normal)
@@ -531,7 +549,7 @@ public class BaseMessageCell: UITableViewCell {
             quoteView.isHidden = true
         }
 
-        messageLabel.attributedText = getFormattedText(messageText: msg.text, searchText: searchText, highlight: highlight)
+        messageLabel.attributedText = getFormattedText(messageText: effectiveMessageText(for: msg), searchText: searchText, highlight: highlight)
         messageLabel.delegate = self
 
         if let reactions = dcContext.getMessageReactions(messageId: msg.id) {
@@ -725,6 +743,8 @@ public class BaseMessageCell: UITableViewCell {
         timer = nil
         dcContextId = nil
         dcMsgId = nil
+        expandedHtmlMessageText = nil
+        isExpandingHtmlMessage = false
     }
 
     @objc func reactionsViewTapped(_ sender: Any?) {

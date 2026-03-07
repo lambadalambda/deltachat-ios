@@ -47,11 +47,13 @@ class ImageTextCell: BaseMessageCell, ReusableCell {
     }
 
     override func update(dcContext: DcContext, msg: DcMsg, messageStyle: UIRectCorner, showAvatar: Bool, showName: Bool, showViewCount: Bool, searchText: String? = nil, highlight: Bool) {
-        messageLabel.text = msg.text
-        let hasEmptyText = msg.text?.isEmpty ?? true
-        bottomCompactView = msg.type != DC_MSG_STICKER && !msg.hasHtml && hasEmptyText
-        showBottomLabelBackground = !msg.hasHtml && hasEmptyText
-        mainContentView.spacing = msg.text?.isEmpty ?? false ? 0 : 6
+        let messageText = effectiveMessageText(for: msg)
+        messageLabel.text = messageText
+        let hasEmptyText = messageText?.isEmpty ?? true
+        let hasVisibleHtmlAction = shouldShowHtmlActionButton(for: msg)
+        bottomCompactView = msg.type != DC_MSG_STICKER && !hasVisibleHtmlAction && hasEmptyText
+        showBottomLabelBackground = !hasVisibleHtmlAction && hasEmptyText
+        mainContentView.spacing = hasEmptyText ? 0 : 6
         topCompactView = msg.quoteText == nil ? true : false
         isTransparent = (msg.type == DC_MSG_STICKER && msg.quoteMessage == nil)
         topLabel.isHidden = msg.type == DC_MSG_STICKER
