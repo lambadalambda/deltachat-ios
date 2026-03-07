@@ -1,4 +1,5 @@
 import Foundation
+import DcCore
 
 struct JsonrpcError: Decodable {
     let message: String
@@ -19,9 +20,6 @@ struct JsonrpcResult<T: Decodable>: Decodable {
 public class DcAccounts {
     public static let shared = DcAccounts()
 
-    /// The application group identifier defines a group of apps or extensions that have access to a shared container.
-    /// The ID is created in the apple developer portal and can be changed there.
-    let applicationGroupIdentifier = "group.chat.delta.ios"
     var accountsPointer: OpaquePointer?
     var rpcPointer: OpaquePointer?
     public var fetchSemaphore: DispatchSemaphore?
@@ -156,11 +154,31 @@ public class DcAccounts {
     }
 
     public func openDatabase(writeable: Bool) {
-        if var sharedDbLocation = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: applicationGroupIdentifier) {
-            sharedDbLocation.appendPathComponent("accounts", isDirectory: true)
-            accountsPointer = dc_accounts_new(sharedDbLocation.path, writeable ? 1 : 0)
-            rpcPointer = dc_jsonrpc_init(accountsPointer)
+        let fileManager = FileManager.default
+        var baseDirectory = DcSharedContainer.containerURL()
+        baseDirectory.appendPathComponent("accounts", isDirectory: true)
+
+        // IMPORTANT: Do not create the directory proactively.
+        // dc_accounts_new() creates the directory *and* writes its config file (accounts.toml)
+        // only if the directory does not exist. If we create an empty directory here,
+        // dc_accounts_new() will refuse to proceed because the config is missing.
+        if writeable {
+            let configFile = baseDirectory.appendingPathComponent("accounts.toml")
+            if fileManager.fileExists(atPath: baseDirectory.path),
+               !fileManager.fileExists(atPath: configFile.path) {
+                // Recover from a half-initialized accounts dir (e.g. created by a buggy build).
+                // Only delete if it is empty to avoid deleting user data.
+                if let contents = try? fileManager.contentsOfDirectory(atPath: baseDirectory.path) {
+                    let nonTrivialContents = contents.filter { $0 != ".DS_Store" }
+                    if nonTrivialContents.isEmpty {
+                        try? fileManager.removeItem(at: baseDirectory)
+                    }
+                }
+            }
         }
+
+        accountsPointer = dc_accounts_new(baseDirectory.path, writeable ? 1 : 0)
+        rpcPointer = dc_jsonrpc_init(accountsPointer)
     }
 
     public func closeDatabase() {

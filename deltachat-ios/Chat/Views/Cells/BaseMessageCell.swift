@@ -548,40 +548,91 @@ public class BaseMessageCell: UITableViewCell {
     }
 
     private func getFormattedText(messageText: String?, searchText: String?, highlight: Bool) -> NSAttributedString? {
-        if let messageText = messageText {
-            var fontSize = UIFont.preferredFont(for: .body, weight: .regular).pointSize
-            let charCount = messageText.count
-            if charCount <= 8 && messageText.containsOnlyEmoji { // render as jumbomoji
-                if charCount <= 2 {
-                    fontSize *= 3.0
-                } else if charCount <= 4 {
-                    fontSize *= 2.5
-                } else if charCount <= 6 {
-                    fontSize *= 1.75
-                } else {
-                    fontSize *= 1.35
-                }
-            }
+        guard let messageText else { return nil }
 
-            let fontAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: fontSize),
-                .foregroundColor: DcColors.defaultTextColor
-            ]
-            let mutableAttributedString = NSMutableAttributedString(string: messageText, attributes: fontAttributes)
-
-            if let searchText = searchText {
-                let ranges = messageText.ranges(of: searchText, options: .caseInsensitive)
-                for range in ranges {
-                    let nsRange = NSRange(range, in: messageText)
-                    mutableAttributedString.addAttribute(.font, value: UIFont.preferredFont(for: .body, weight: .semibold), range: nsRange)
-                    if highlight {
-                        mutableAttributedString.addAttribute(.backgroundColor, value: DcColors.highlight, range: nsRange)
-                    }
-                }
-            }
-            return mutableAttributedString
+        // Guard against pathological cases; the core limit is lower, this is a failsafe.
+        // If we ever hit this limit, we prefer returning plain text over doing expensive parsing.
+        let upperLimitForParsedMessagesUtf16 = 20_000
+        if messageText.utf16.count >= upperLimitForParsedMessagesUtf16 {
+            return plainAttributedString(messageText: messageText, searchText: searchText, highlight: highlight)
         }
-        return nil
+
+        let markdownElements = MessageMarkdownParser.parseMarkdown(messageText)
+        let visibleText = MessageMarkdownRenderer.plainText(from: markdownElements)
+        let baseFontSize = BaseMessageCell.jumbomojiAdjustedFontSize(for: visibleText)
+        let baseFont = UIFont.systemFont(ofSize: baseFontSize, weight: .regular)
+
+        let codeBackgroundColor = UIColor.themeColor(
+            light: UIColor.black.withAlphaComponent(0.06),
+            dark: UIColor.white.withAlphaComponent(0.12)
+        )
+
+        let rendered = MessageMarkdownRenderer.render(
+            elements: markdownElements,
+            mode: .interactive,
+            baseFont: baseFont,
+            textColor: DcColors.defaultTextColor,
+            codeBackgroundColor: codeBackgroundColor
+        )
+
+        let highlighted = applySearchHighlight(
+            rendered,
+            searchText: searchText,
+            highlight: highlight,
+            fallbackFont: baseFont
+        )
+
+        return highlighted
+    }
+
+    private static func jumbomojiAdjustedFontSize(for messageText: String) -> CGFloat {
+        var fontSize = UIFont.preferredFont(for: .body, weight: .regular).pointSize
+        let charCount = messageText.count
+        if charCount <= 8 && messageText.containsOnlyEmoji {
+            if charCount <= 2 {
+                fontSize *= 3.0
+            } else if charCount <= 4 {
+                fontSize *= 2.5
+            } else if charCount <= 6 {
+                fontSize *= 1.75
+            } else {
+                fontSize *= 1.35
+            }
+        }
+        return fontSize
+    }
+
+    private func plainAttributedString(messageText: String, searchText: String?, highlight: Bool) -> NSAttributedString {
+        let baseFontSize = BaseMessageCell.jumbomojiAdjustedFontSize(for: messageText)
+        let font = UIFont.systemFont(ofSize: baseFontSize, weight: .regular)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: DcColors.defaultTextColor
+        ]
+        let rendered = NSMutableAttributedString(string: messageText, attributes: attributes)
+        return applySearchHighlight(rendered, searchText: searchText, highlight: highlight, fallbackFont: font)
+    }
+
+    private func applySearchHighlight(
+        _ attributedString: NSMutableAttributedString,
+        searchText: String?,
+        highlight: Bool,
+        fallbackFont: UIFont
+    ) -> NSAttributedString {
+        guard let searchText, !searchText.isEmpty else {
+            return attributedString
+        }
+
+        let fullString = attributedString.string
+        let ranges = fullString.ranges(of: searchText, options: .caseInsensitive)
+        for range in ranges {
+            let nsRange = NSRange(range, in: fullString)
+            MessageMarkdownRenderer.applyFontWeight(.semibold, to: attributedString, range: nsRange, fallbackFont: fallbackFont)
+            if highlight {
+                attributedString.addAttribute(.backgroundColor, value: DcColors.highlight, range: nsRange)
+            }
+        }
+        return attributedString
     }
 
     public override func accessibilityElementDidBecomeFocused() {
@@ -602,8 +653,9 @@ public class BaseMessageCell: UITableViewCell {
         if let topLabelText = topLabel.text {
             topLabelAccessibilityString = "\(topLabelText), "
         }
-        if let messageLabelText = messageLabel.text {
-            messageLabelAccessibilityString = "\(messageLabelText), "
+        let a11yMessageText = messageLabel.attributedText?.string ?? messageLabel.text
+        if let a11yMessageText {
+            messageLabelAccessibilityString = "\(a11yMessageText), "
         }
         if let senderTitle = quoteView.senderTitle.text, let quote = quoteView.quote.text {
             quoteAccessibilityString = "\(senderTitle), \(quote), \(String.localized("reply_noun")), "
@@ -736,4 +788,742 @@ public protocol BaseMessageCellDelegate: AnyObject {
     func statusTapped(indexPath: IndexPath)
     func gotoOriginal(indexPath: IndexPath)
     func reactionsTapped(indexPath: IndexPath)
+}
+
+// MARK: - Message Markdown
+
+internal enum MessageMarkdownElement: Equatable {
+    case text(String)
+    case inlineCode(String)
+    case codeBlock(content: String, language: String)
+    case markdownLink(target: String, label: [MessageMarkdownElement])
+    case bold([MessageMarkdownElement])
+    case italic([MessageMarkdownElement])
+    case strike([MessageMarkdownElement])
+}
+
+internal struct MessageMarkdownParser {
+    private static let escapableMarkdownCharacters: Set<Character> = [
+        "\\",
+        "[",
+        "]",
+        "(",
+        ")",
+        "*",
+        "_",
+        "~",
+        "`"
+    ]
+
+    private static let simpleFormatCharacters: Set<Character> = ["*", "_", "~"]
+
+    static func parseMarkdown(_ message: String) -> [MessageMarkdownElement] {
+        mergeTextElements(parseBlocks(message))
+    }
+
+    private static func parseBlocks(_ message: String) -> [MessageMarkdownElement] {
+        let chars = Array(message)
+        var parts: [MessageMarkdownElement] = []
+        var offset = 0
+
+        while offset < chars.count {
+            guard let blockStart = indexOfTripleBackticks(in: chars, from: offset) else {
+                parts.append(contentsOf: parseInline(String(chars[offset..<chars.count])))
+                break
+            }
+
+            if blockStart > offset {
+                parts.append(contentsOf: parseInline(String(chars[offset..<blockStart])))
+            }
+
+            if let parsedCodeBlock = tryParseCodeBlock(chars, startIndex: blockStart) {
+                parts.append(parsedCodeBlock.element)
+                offset = parsedCodeBlock.nextIndex
+            } else {
+                parts.append(.text("```"))
+                offset = blockStart + 3
+            }
+        }
+
+        return parts
+    }
+
+    private static func indexOfTripleBackticks(in chars: [Character], from start: Int) -> Int? {
+        guard chars.count >= 3, start < chars.count else { return nil }
+        var i = start
+        while i + 2 < chars.count {
+            if chars[i] == "`" && chars[i + 1] == "`" && chars[i + 2] == "`" {
+                return i
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private static func tryParseCodeBlock(
+        _ chars: [Character],
+        startIndex: Int
+    ) -> (element: MessageMarkdownElement, nextIndex: Int)? {
+        guard startIndex + 2 < chars.count else { return nil }
+        guard chars[startIndex] == "`", chars[startIndex + 1] == "`", chars[startIndex + 2] == "`" else { return nil }
+
+        let afterFence = startIndex + 3
+        guard let closingFence = indexOfTripleBackticks(in: chars, from: afterFence) else {
+            return nil
+        }
+
+        // Find first line break between fences.
+        let firstLineBreak = chars[afterFence..<closingFence].firstIndex(of: "\n")
+        let hasLanguageHeader = firstLineBreak != nil && firstLineBreak != afterFence
+
+        let language: String
+        if hasLanguageHeader, let firstLineBreak {
+            language = String(chars[afterFence..<firstLineBreak]).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            language = ""
+        }
+
+        let contentStart: Int
+        if let firstLineBreak, firstLineBreak < closingFence {
+            contentStart = firstLineBreak + 1
+        } else {
+            contentStart = afterFence
+        }
+
+        let content = String(chars[contentStart..<closingFence])
+
+        return (
+            element: .codeBlock(content: content, language: language),
+            nextIndex: closingFence + 3
+        )
+    }
+
+    private static func parseInline(_ message: String) -> [MessageMarkdownElement] {
+        let chars = Array(message)
+        var elements: [MessageMarkdownElement] = []
+        var plainTextBuffer = ""
+        var offset = 0
+
+        func flushPlainTextBuffer() {
+            guard !plainTextBuffer.isEmpty else { return }
+            elements.append(.text(plainTextBuffer))
+            plainTextBuffer = ""
+        }
+
+        while offset < chars.count {
+            let current = chars[offset]
+            let next = (offset + 1 < chars.count) ? chars[offset + 1] : nil
+
+            if current == "\\", let next, escapableMarkdownCharacters.contains(next) {
+                plainTextBuffer.append(next)
+                offset += 2
+                continue
+            }
+
+            if current == "[" {
+                if let parsedLink = tryParseMarkdownLink(chars, startIndex: offset) {
+                    flushPlainTextBuffer()
+                    elements.append(
+                        .markdownLink(
+                            target: parsedLink.target,
+                            label: parseInline(parsedLink.label)
+                        )
+                    )
+                    offset = parsedLink.nextIndex
+                    continue
+                }
+            }
+
+            if current == "`" {
+                if let parsedInlineCode = tryParseInlineCode(chars, startIndex: offset) {
+                    flushPlainTextBuffer()
+                    elements.append(.inlineCode(parsedInlineCode.content))
+                    offset = parsedInlineCode.nextIndex
+                    continue
+                }
+            }
+
+            if simpleFormatCharacters.contains(current) {
+                if let parsedFormatted = tryParseSimpleFormatting(chars, startIndex: offset) {
+                    flushPlainTextBuffer()
+
+                    let contentElements = parseInline(parsedFormatted.content)
+                    switch parsedFormatted.type {
+                    case .bold:
+                        elements.append(.bold(contentElements))
+                    case .italic:
+                        elements.append(.italic(contentElements))
+                    case .strike:
+                        elements.append(.strike(contentElements))
+                    }
+
+                    offset = parsedFormatted.nextIndex
+                    continue
+                }
+            }
+
+            plainTextBuffer.append(current)
+            offset += 1
+        }
+
+        flushPlainTextBuffer()
+        return mergeTextElements(elements)
+    }
+
+    private static func tryParseMarkdownLink(
+        _ chars: [Character],
+        startIndex: Int
+    ) -> (label: String, target: String, nextIndex: Int)? {
+        guard chars.get(at: startIndex) == "[" else { return nil }
+
+        var labelDepth = 1
+        var labelEnd: Int?
+        var i = startIndex + 1
+        while i < chars.count {
+            let current = chars[i]
+
+            if current == "\\" {
+                i += 2
+                continue
+            }
+
+            if current == "[" {
+                labelDepth += 1
+                i += 1
+                continue
+            }
+
+            if current == "]" {
+                labelDepth -= 1
+                if labelDepth == 0 {
+                    labelEnd = i
+                    break
+                }
+            }
+
+            i += 1
+        }
+
+        guard let labelEnd else { return nil }
+        guard chars.get(at: labelEnd + 1) == "(" else { return nil }
+
+        var targetDepth = 1
+        var targetEnd: Int?
+        i = labelEnd + 2
+        while i < chars.count {
+            let current = chars[i]
+
+            if current == "\\" {
+                i += 2
+                continue
+            }
+
+            if current == "(" {
+                targetDepth += 1
+                i += 1
+                continue
+            }
+
+            if current == ")" {
+                targetDepth -= 1
+                if targetDepth == 0 {
+                    targetEnd = i
+                    break
+                }
+            }
+
+            i += 1
+        }
+
+        guard let targetEnd else { return nil }
+
+        let label = String(chars[(startIndex + 1)..<labelEnd])
+        let rawTarget = String(chars[(labelEnd + 2)..<targetEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawTarget.isEmpty else { return nil }
+
+        let target = normalizeLinkTarget(rawTarget)
+        guard !target.isEmpty else { return nil }
+
+        return (label: label, target: target, nextIndex: targetEnd + 1)
+    }
+
+    private static func normalizeLinkTarget(_ rawTarget: String) -> String {
+        let trimmedTarget: String
+        if rawTarget.hasPrefix("<"), rawTarget.hasSuffix(">"), rawTarget.count >= 2 {
+            trimmedTarget = String(rawTarget.dropFirst().dropLast())
+        } else {
+            trimmedTarget = rawTarget
+        }
+
+        // Unescape: \\, \(, \), \[, \]
+        let chars = Array(trimmedTarget)
+        var result = ""
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "\\", let next = chars.get(at: i + 1) {
+                if next == "\\" || next == "(" || next == ")" || next == "[" || next == "]" {
+                    result.append(next)
+                    i += 2
+                    continue
+                }
+            }
+            result.append(chars[i])
+            i += 1
+        }
+        return result
+    }
+
+    private static func tryParseInlineCode(
+        _ chars: [Character],
+        startIndex: Int
+    ) -> (content: String, nextIndex: Int)? {
+        guard chars.get(at: startIndex) == "`" else { return nil }
+
+        var markerLength = 1
+        while chars.get(at: startIndex + markerLength) == "`" {
+            markerLength += 1
+        }
+
+        let searchStart = startIndex + markerLength
+        var closingIndex: Int?
+
+        var i = searchStart
+        while i + markerLength <= chars.count {
+            if chars[i] == "`" && startsWith(chars, marker: "`", length: markerLength, at: i) {
+                closingIndex = i
+                break
+            }
+            i += 1
+        }
+
+        guard let closingIndex else { return nil }
+        guard closingIndex != searchStart else { return nil }
+
+        let content = String(chars[searchStart..<closingIndex])
+        return (content: content, nextIndex: closingIndex + markerLength)
+    }
+
+    private enum FormattedType {
+        case bold
+        case italic
+        case strike
+    }
+
+    private static func tryParseSimpleFormatting(
+        _ chars: [Character],
+        startIndex: Int
+    ) -> (type: FormattedType, content: String, nextIndex: Int)? {
+        guard let marker = chars.get(at: startIndex), simpleFormatCharacters.contains(marker) else {
+            return nil
+        }
+
+        let markerLength = (chars.get(at: startIndex + 1) == marker) ? 2 : 1
+        let previous = startIndex > 0 ? chars[startIndex - 1] : nil
+        let afterOpeningMarker = chars.get(at: startIndex + markerLength)
+        if afterOpeningMarker == nil || isWhitespace(afterOpeningMarker) || !isBoundaryCharacter(previous) {
+            return nil
+        }
+
+        let type: FormattedType
+        if marker == "*" {
+            type = .bold
+        } else if marker == "_" {
+            type = .italic
+        } else {
+            type = .strike
+        }
+
+        var closingIndex = startIndex + markerLength
+        while closingIndex < chars.count {
+            let current = chars[closingIndex]
+            if current == "\\" {
+                closingIndex += 2
+                continue
+            }
+
+            if !startsWith(chars, marker: marker, length: markerLength, at: closingIndex) {
+                closingIndex += 1
+                continue
+            }
+
+            let beforeClosingMarker = closingIndex > 0 ? chars[closingIndex - 1] : nil
+            let afterClosingMarker = chars.get(at: closingIndex + markerLength)
+
+            if beforeClosingMarker == nil || isWhitespace(beforeClosingMarker) || !isBoundaryCharacter(afterClosingMarker) {
+                closingIndex += 1
+                continue
+            }
+
+            let content = String(chars[(startIndex + markerLength)..<closingIndex])
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                closingIndex += 1
+                continue
+            }
+
+            return (type: type, content: content, nextIndex: closingIndex + markerLength)
+        }
+
+        return nil
+    }
+
+    private static func startsWith(
+        _ chars: [Character],
+        marker: Character,
+        length: Int,
+        at index: Int
+    ) -> Bool {
+        guard index >= 0, length > 0, index + length <= chars.count else { return false }
+        for j in 0..<length where chars[index + j] != marker {
+            return false
+        }
+        return true
+    }
+
+    private static func isWhitespace(_ value: Character?) -> Bool {
+        guard let value else { return false }
+        return value.isWhitespace
+    }
+
+    private static func isBoundaryCharacter(_ value: Character?) -> Bool {
+        guard let value else { return true }
+        return !value.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    private static func mergeTextElements(_ elements: [MessageMarkdownElement]) -> [MessageMarkdownElement] {
+        var merged: [MessageMarkdownElement] = []
+
+        for element in elements {
+            if case let .text(text) = element,
+               let last = merged.last,
+               case let .text(lastText) = last {
+                merged.removeLast()
+                merged.append(.text(lastText + text))
+            } else {
+                merged.append(element)
+            }
+        }
+
+        return merged
+    }
+}
+
+internal struct MessageMarkdownRenderer {
+    enum Mode {
+        case interactive
+        case nonInteractive
+    }
+
+    private struct Style {
+        var weight: UIFont.Weight
+        var italic: Bool
+        var monospaced: Bool
+    }
+
+    static func plainText(from elements: [MessageMarkdownElement]) -> String {
+        elements.map(plainText(from:)).joined()
+    }
+
+    private static func plainText(from element: MessageMarkdownElement) -> String {
+        switch element {
+        case .text(let text):
+            return text
+        case .inlineCode(let code):
+            return code
+        case .codeBlock(let content, let language):
+            return language.isEmpty ? content : (language + "\n" + content)
+        case .markdownLink(let target, let label):
+            if label.isEmpty {
+                return target
+            }
+            return plainText(from: label)
+        case .bold(let children), .italic(let children), .strike(let children):
+            return plainText(from: children)
+        }
+    }
+
+    static func render(
+        elements: [MessageMarkdownElement],
+        mode: Mode,
+        baseFont: UIFont,
+        textColor: UIColor,
+        codeBackgroundColor: UIColor
+    ) -> NSMutableAttributedString {
+        let result = NSMutableAttributedString()
+        let baseStyle = Style(weight: .regular, italic: false, monospaced: false)
+        for element in elements {
+            result.append(
+                render(
+                    element: element,
+                    mode: mode,
+                    style: baseStyle,
+                    baseFont: baseFont,
+                    textColor: textColor,
+                    codeBackgroundColor: codeBackgroundColor
+                )
+            )
+        }
+        return result
+    }
+
+    static func applyFontWeight(
+        _ weight: UIFont.Weight,
+        to attributedString: NSMutableAttributedString,
+        range: NSRange,
+        fallbackFont: UIFont
+    ) {
+        var updates: [(NSRange, UIFont)] = []
+        attributedString.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
+            let currentFont = (value as? UIFont) ?? fallbackFont
+            let updated = fontBySettingWeight(weight, on: currentFont)
+            updates.append((subrange, updated))
+        }
+        for (subrange, font) in updates {
+            attributedString.addAttribute(.font, value: font, range: subrange)
+        }
+    }
+
+    private static func render(
+        element: MessageMarkdownElement,
+        mode: Mode,
+        style: Style,
+        baseFont: UIFont,
+        textColor: UIColor,
+        codeBackgroundColor: UIColor
+    ) -> NSMutableAttributedString {
+        switch element {
+        case .text(let text):
+            return NSMutableAttributedString(
+                string: text,
+                attributes: baseAttributes(
+                    style: style,
+                    baseFont: baseFont,
+                    textColor: textColor,
+                    codeBackgroundColor: nil
+                )
+            )
+
+        case .bold(let children):
+            var newStyle = style
+            newStyle.weight = .bold
+            return renderChildren(
+                children,
+                mode: mode,
+                style: newStyle,
+                baseFont: baseFont,
+                textColor: textColor,
+                codeBackgroundColor: codeBackgroundColor
+            )
+
+        case .italic(let children):
+            var newStyle = style
+            newStyle.italic = true
+            return renderChildren(
+                children,
+                mode: mode,
+                style: newStyle,
+                baseFont: baseFont,
+                textColor: textColor,
+                codeBackgroundColor: codeBackgroundColor
+            )
+
+        case .strike(let children):
+            let rendered = renderChildren(
+                children,
+                mode: mode,
+                style: style,
+                baseFont: baseFont,
+                textColor: textColor,
+                codeBackgroundColor: codeBackgroundColor
+            )
+            rendered.addAttribute(
+                .strikethroughStyle,
+                value: NSUnderlineStyle.single.rawValue,
+                range: NSRange(location: 0, length: rendered.length)
+            )
+            return rendered
+
+        case .inlineCode(let code):
+            var newStyle = style
+            newStyle.monospaced = true
+            let rendered = NSMutableAttributedString(
+                string: code,
+                attributes: baseAttributes(
+                    style: newStyle,
+                    baseFont: baseFont,
+                    textColor: textColor,
+                    codeBackgroundColor: codeBackgroundColor
+                )
+            )
+            suppressDetectors(.all, in: rendered)
+            return rendered
+
+        case .codeBlock(let content, let language):
+            var newStyle = style
+            newStyle.monospaced = true
+            let blockText = language.isEmpty ? content : (language + "\n" + content)
+            let rendered = NSMutableAttributedString(
+                string: blockText,
+                attributes: baseAttributes(
+                    style: newStyle,
+                    baseFont: baseFont,
+                    textColor: textColor,
+                    codeBackgroundColor: codeBackgroundColor
+                )
+            )
+            suppressDetectors(.all, in: rendered)
+
+            if !language.isEmpty {
+                let languageLength = (language as NSString).length
+                let languageRange = NSRange(location: 0, length: languageLength)
+
+                let headerFontSize = (baseFont.pointSize * 0.82).rounded(.down)
+                let headerFont = UIFont.monospacedSystemFont(ofSize: headerFontSize, weight: .semibold)
+                rendered.addAttribute(.font, value: headerFont, range: languageRange)
+                rendered.addAttribute(
+                    .foregroundColor,
+                    value: textColor.withAlphaComponent(0.85),
+                    range: languageRange
+                )
+            }
+
+            return rendered
+
+        case .markdownLink(let target, let label):
+            let labelElements: [MessageMarkdownElement] = label.isEmpty ? [.text(target)] : label
+            let renderedLabel = renderChildren(
+                labelElements,
+                mode: .nonInteractive,
+                style: style,
+                baseFont: baseFont,
+                textColor: textColor,
+                codeBackgroundColor: codeBackgroundColor
+            )
+
+            guard mode == .interactive else {
+                return renderedLabel
+            }
+
+            let fullTarget = normalizedLinkTarget(target)
+            guard let url = URL(string: fullTarget) else {
+                return renderedLabel
+            }
+
+            renderedLabel.addAttribute(
+                .link,
+                value: url,
+                range: NSRange(location: 0, length: renderedLabel.length)
+            )
+            suppressDetectors(.autoDetectOnly, in: renderedLabel)
+            return renderedLabel
+        }
+    }
+
+    private static func renderChildren(
+        _ children: [MessageMarkdownElement],
+        mode: Mode,
+        style: Style,
+        baseFont: UIFont,
+        textColor: UIColor,
+        codeBackgroundColor: UIColor
+    ) -> NSMutableAttributedString {
+        let result = NSMutableAttributedString()
+        for child in children {
+            result.append(
+                render(
+                    element: child,
+                    mode: mode,
+                    style: style,
+                    baseFont: baseFont,
+                    textColor: textColor,
+                    codeBackgroundColor: codeBackgroundColor
+                )
+            )
+        }
+        return result
+    }
+
+    private static func baseAttributes(
+        style: Style,
+        baseFont: UIFont,
+        textColor: UIColor,
+        codeBackgroundColor: UIColor?
+    ) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font(for: style, baseFont: baseFont),
+            .foregroundColor: textColor
+        ]
+        if let codeBackgroundColor {
+            attributes[.backgroundColor] = codeBackgroundColor
+        }
+        return attributes
+    }
+
+    private static func font(for style: Style, baseFont: UIFont) -> UIFont {
+        let size = baseFont.pointSize
+        let base: UIFont
+        if style.monospaced {
+            base = UIFont.monospacedSystemFont(ofSize: size, weight: style.weight)
+        } else {
+            base = UIFont.systemFont(ofSize: size, weight: style.weight)
+        }
+
+        guard style.italic else {
+            return base
+        }
+
+        if let descriptor = base.fontDescriptor.withSymbolicTraits(base.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+            return UIFont(descriptor: descriptor, size: size)
+        }
+        return base
+    }
+
+    private static func normalizedLinkTarget(_ target: String) -> String {
+        let hasScheme = linkTargetHasScheme(target)
+        return hasScheme ? target : ("https://" + target)
+    }
+
+    private static func linkTargetHasScheme(_ target: String) -> Bool {
+        guard let first = target.first, first.isLetter else { return false }
+
+        var index = target.index(after: target.startIndex)
+        while index < target.endIndex {
+            let ch = target[index]
+            if ch == ":" {
+                return true
+            }
+            if ch.isLetter || ch.isNumber || ch == "+" || ch == "-" || ch == "." {
+                index = target.index(after: index)
+                continue
+            }
+            return false
+        }
+        return false
+    }
+
+    private static func fontBySettingWeight(_ weight: UIFont.Weight, on font: UIFont) -> UIFont {
+        var traits = font.fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any] ?? [:]
+        traits[.weight] = weight
+        let descriptor = font.fontDescriptor.addingAttributes([.traits: traits])
+        return UIFont(descriptor: descriptor, size: font.pointSize)
+    }
+
+    private enum DetectorSuppression {
+        case autoDetectOnly
+        case all
+    }
+
+    private static func suppressDetectors(_ suppression: DetectorSuppression, in attributedString: NSMutableAttributedString) {
+        let value: Int
+        switch suppression {
+        case .autoDetectOnly:
+            value = MessageLabel.DetectorSuppression.autoDetectOnly.rawValue
+        case .all:
+            value = MessageLabel.DetectorSuppression.all.rawValue
+        }
+        attributedString.addAttribute(
+            MessageLabel.detectorSuppressionAttributeKey,
+            value: value,
+            range: NSRange(location: 0, length: attributedString.length)
+        )
+    }
 }

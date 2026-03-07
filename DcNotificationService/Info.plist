@@ -9,5 +9,7 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
 	</dict>
+	<key>DC_APP_GROUP_ID</key>
+	<string>group.club.soykaf.deltachat.dev</string>
 </dict>
 </plist>

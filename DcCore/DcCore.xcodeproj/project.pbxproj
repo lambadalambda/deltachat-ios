@@ -23,6 +23,7 @@
 		308198AB24866229003BE20D /* UserDefaults+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 308198AA24866229003BE20D /* UserDefaults+Extensions.swift */; };
 		30B2BD04278F207000889AA4 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30B2BD03278F207000889AA4 /* KeychainManager.swift */; };
 		30E8F2212447357500CE2C90 /* DatabaseHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E8F2202447357500CE2C90 /* DatabaseHelper.swift */; };
+		1541267FB10ABB8B81C15D5F /* DcSharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE74ACC557F1DC951E810153 /* DcSharedContainer.swift */; };
 		30E8F2482449C98600CE2C90 /* UIView+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E8F2472449C98600CE2C90 /* UIView+Extensions.swift */; };
 		30E8F24D2449D30200CE2C90 /* DcColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E8F24C2449D30200CE2C90 /* DcColors.swift */; };
 		5F0FCC772DAE65AD00C4F9C3 /* UNMutableNotificationContent+init.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0FCC762DAE65AD00C4F9C3 /* UNMutableNotificationContent+init.swift */; };
@@ -68,6 +69,7 @@
 		308198AA24866229003BE20D /* UserDefaults+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UserDefaults+Extensions.swift"; sourceTree = "<group>"; };
 		30B2BD03278F207000889AA4 /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
 		30E8F2202447357500CE2C90 /* DatabaseHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseHelper.swift; sourceTree = "<group>"; };
+		CE74ACC557F1DC951E810153 /* DcSharedContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DcSharedContainer.swift; sourceTree = "<group>"; };
 		30E8F2472449C98600CE2C90 /* UIView+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIView+Extensions.swift"; sourceTree = "<group>"; };
 		30E8F24C2449D30200CE2C90 /* DcColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DcColors.swift; sourceTree = "<group>"; };
 		5F0FCC762DAE65AD00C4F9C3 /* UNMutableNotificationContent+init.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UNMutableNotificationContent+init.swift"; sourceTree = "<group>"; };
@@ -195,6 +197,7 @@
 				30B2BD03278F207000889AA4 /* KeychainManager.swift */,
 				640ACB462E1E3BA9000FBBCC /* ImageFormat.swift */,
 				30E8F2202447357500CE2C90 /* DatabaseHelper.swift */,
+				CE74ACC557F1DC951E810153 /* DcSharedContainer.swift */,
 				30421987243F23E500516852 /* Constants.swift */,
 				3042195C243E23F100516852 /* DcUtils.swift */,
 				306C324724460CDE001D89F3 /* DateUtils.swift */,
@@ -324,6 +327,7 @@
 				D8BBF0092B57D92E008C96FD /* DcEvent.swift in Sources */,
 				640BC0472DCC941D0049B475 /* DarwinNotificationCenter.swift in Sources */,
 				30E8F2212447357500CE2C90 /* DatabaseHelper.swift in Sources */,
+				1541267FB10ABB8B81C15D5F /* DcSharedContainer.swift in Sources */,
 				64E7AA642EBE43E400DB88B7 /* CallKit.swift in Sources */,
 				D8BBF01B2B57D9BE008C96FD /* DcReaction.swift in Sources */,
 				3042195D243E23F100516852 /* DcUtils.swift in Sources */,
@@ -388,7 +392,6 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -453,7 +456,6 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -480,7 +482,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = 8Y86453UA8;
+				DEVELOPMENT_TEAM = SZ2F3U9QJ3;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -501,7 +503,7 @@
 					"$(PROJECT_DIR)/../deltachat-ios/libraries/deltachat-core-rust/deltachat-ffi",
 					"$(PROJECT_DIR)/../deltachat-ios/libraries",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = chat.delta.DcCore;
+				PRODUCT_BUNDLE_IDENTIFIER = club.soykaf.deltachat.dev.DcCore;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "";
@@ -514,7 +516,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = 8Y86453UA8;
+				DEVELOPMENT_TEAM = SZ2F3U9QJ3;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -535,7 +537,7 @@
 					"$(PROJECT_DIR)/../deltachat-ios/libraries/deltachat-core-rust/deltachat-ffi",
 					"$(PROJECT_DIR)/../deltachat-ios/libraries",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = chat.delta.DcCore;
+				PRODUCT_BUNDLE_IDENTIFIER = club.soykaf.deltachat.dev.DcCore;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "";

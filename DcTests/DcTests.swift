@@ -28,6 +28,58 @@ class DcTests {
         await webxdcVC!.dismiss(animated: false)
         #expect(webxdcVC == nil)
     }
+
+    @Test @MainActor func markdownRenderingShouldStripMarkersAndAddLinks() async throws {
+        let input = "Hello *bold* _it_ ~st~ `code` ```swift\nprint(\"hi\")\n``` [Delta](delta.chat)"
+        let elements = MessageMarkdownParser.parseMarkdown(input)
+
+        let rendered = MessageMarkdownRenderer.render(
+            elements: elements,
+            mode: .interactive,
+            baseFont: UIFont.systemFont(ofSize: 14),
+            textColor: .label,
+            codeBackgroundColor: .secondarySystemBackground
+        )
+
+        #expect(rendered.string == "Hello bold it st code swift\nprint(\"hi\")\n Delta")
+
+        let ns = rendered.string as NSString
+        let deltaRange = ns.range(of: "Delta")
+        #expect(deltaRange.location != NSNotFound)
+
+        let link = rendered.attribute(.link, at: deltaRange.location, effectiveRange: nil) as? URL
+        #expect(link?.absoluteString == "https://delta.chat")
+    }
+
+    @Test @MainActor func markdownShouldSuppressAutodetectionInsideMarkdownLinkLabels() async throws {
+        let label = MessageLabel()
+        label.enabledDetectors = [.url]
+
+        let text = NSMutableAttributedString(string: "https://evil.com https://outside.com")
+        let ns = text.string as NSString
+        let evilRange = ns.range(of: "https://evil.com")
+        #expect(evilRange.location != NSNotFound)
+
+        text.addAttribute(.link, value: URL(string: "https://good.com")!, range: evilRange)
+        text.addAttribute(
+            MessageLabel.detectorSuppressionAttributeKey,
+            value: MessageLabel.DetectorSuppression.autoDetectOnly.rawValue,
+            range: evilRange
+        )
+
+        label.attributedText = text
+
+        let urls = label.rangesForDetectors[.url, default: []].compactMap { tuple -> String? in
+            if case let .link(url) = tuple.1 {
+                return url?.absoluteString
+            }
+            return nil
+        }
+
+        #expect(urls.contains("https://good.com"))
+        #expect(urls.contains("https://outside.com"))
+        #expect(!urls.contains("https://evil.com"))
+    }
 }
 
 

@@ -48,6 +48,8 @@ ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>
 	</dict>
+	<key>DC_APP_GROUP_ID</key>
+	<string>group.club.soykaf.deltachat.dev</string>
 	<key>UIDesignRequiresCompatibility</key>
 	<true/>
 </dict>

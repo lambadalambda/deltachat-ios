@@ -26,6 +26,17 @@ import UIKit
 
 open class MessageLabel: UILabel {
 
+    /// Some ranges (e.g. markdown inline code) should not be auto-detected as links/phone numbers.
+    /// We control this by setting an attribute on the attributed string and filtering detector matches.
+    internal enum DetectorSuppression: Int {
+        /// Suppress auto-detection (NSDataDetector + custom regex), but keep explicit `.link` attributes.
+        case autoDetectOnly = 1
+        /// Suppress all detection (auto + explicit `.link` attributes).
+        case all = 2
+    }
+
+    internal static let detectorSuppressionAttributeKey = NSAttributedString.Key("deltachat.detectorSuppression")
+
     // MARK: - Private Properties
 
     private lazy var layoutManager: NSLayoutManager = {
@@ -338,14 +349,14 @@ open class MessageLabel: UILabel {
     private func parse(text: NSAttributedString) -> [NSTextCheckingResult] {
         guard enabledDetectors.isEmpty == false else { return [] }
         let range = NSRange(location: 0, length: text.length)
-        var matches = [NSTextCheckingResult]()
+        var autoMatches = [NSTextCheckingResult]()
 
         // Get matches of all .custom DetectorType and add it to matches array
         let regexs = enabledDetectors
             .filter { $0.isCustom }
             .map { parseForMatches(with: $0, in: text, for: range) }
             .joined()
-        matches.append(contentsOf: regexs)
+        autoMatches.append(contentsOf: regexs)
 
         // Get all Checking Types of detectors, except for .custom because they contain their own regex
         let detectorCheckingTypes = enabledDetectors
@@ -353,23 +364,74 @@ open class MessageLabel: UILabel {
             .reduce(0) { $0 | $1.textCheckingType.rawValue }
         if detectorCheckingTypes > 0, let detector = try? NSDataDetector(types: detectorCheckingTypes) {
             let detectorMatches = detector.matches(in: text.string, options: [], range: range)
-            matches.append(contentsOf: detectorMatches)
+            autoMatches.append(contentsOf: detectorMatches)
+        }
+
+        let suppressionRanges = getDetectorSuppressionRanges(in: text, range: range)
+        if !suppressionRanges.auto.isEmpty {
+            autoMatches.removeAll { match in
+                rangeIntersectsAny(match.range, suppressionRanges.auto)
+            }
         }
 
         guard enabledDetectors.contains(.url) else {
-            return matches
+            return autoMatches
         }
 
         // Enumerate NSAttributedString NSLinks and append ranges
-        var results: [NSTextCheckingResult] = matches
+        var explicitLinkMatches: [NSTextCheckingResult] = []
 
         text.enumerateAttribute(NSAttributedString.Key.link, in: range, options: []) { value, range, _ in
             guard let url = value as? URL else { return }
             let result = NSTextCheckingResult.linkCheckingResult(range: range, url: url)
-            results.append(result)
+            explicitLinkMatches.append(result)
         }
 
-        return results
+        if !suppressionRanges.all.isEmpty {
+            explicitLinkMatches.removeAll { match in
+                rangeIntersectsAny(match.range, suppressionRanges.all)
+            }
+        }
+
+        return autoMatches + explicitLinkMatches
+    }
+
+    private func getDetectorSuppressionRanges(
+        in text: NSAttributedString,
+        range: NSRange
+    ) -> (auto: [NSRange], all: [NSRange]) {
+        var auto: [NSRange] = []
+        var all: [NSRange] = []
+
+        text.enumerateAttribute(Self.detectorSuppressionAttributeKey, in: range, options: []) { value, subrange, _ in
+            let rawValue: Int?
+            if let value = value as? Int {
+                rawValue = value
+            } else if let value = value as? NSNumber {
+                rawValue = value.intValue
+            } else {
+                rawValue = nil
+            }
+            guard let rawValue else { return }
+
+            if rawValue == DetectorSuppression.autoDetectOnly.rawValue {
+                auto.append(subrange)
+            } else if rawValue == DetectorSuppression.all.rawValue {
+                auto.append(subrange)
+                all.append(subrange)
+            }
+        }
+
+        return (auto: auto, all: all)
+    }
+
+    private func rangeIntersectsAny(_ range: NSRange, _ suppressedRanges: [NSRange]) -> Bool {
+        for suppressed in suppressedRanges {
+            if NSIntersectionRange(range, suppressed).length > 0 {
+                return true
+            }
+        }
+        return false
     }
 
     private func parseForMatches(with detector: DetectorType, in text: NSAttributedString, for range: NSRange) -> [NSTextCheckingResult] {

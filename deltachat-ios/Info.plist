@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Delta Chat</string>
+	<string>DeltaChat Dev</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -113,5 +113,7 @@
 	<false/>
 	<key>UIDesignRequiresCompatibility</key>
 	<true/>
+	<key>DC_APP_GROUP_ID</key>
+	<string>group.club.soykaf.deltachat.dev</string>
 </dict>
 </plist>

@@ -9,7 +9,7 @@ public extension UserDefaults {
     static var incomingCallPayloadKey = "incomingCallPayload"
 
     static var shared: UserDefaults? {
-        return UserDefaults(suiteName: "group.chat.delta.ios")
+        return DcSharedContainer.sharedUserDefaults
     }
 
     static var mainIoRunning: Bool {

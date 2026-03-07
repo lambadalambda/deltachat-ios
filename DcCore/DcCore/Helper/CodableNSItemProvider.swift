@@ -2,9 +2,20 @@ import Foundation
 import UIKit
 import UniformTypeIdentifiers
 
-public var shareExtensionDirectory = FileManager.default
-    .containerURL(forSecurityApplicationGroupIdentifier: DatabaseHelper.applicationGroupIdentifier)!
-    .appendingPathComponent("share_extension", isDirectory: true)
+public var shareExtensionDirectory: URL = {
+    let fileManager = FileManager.default
+    let baseDirectory: URL
+    if let groupId = DatabaseHelper.applicationGroupIdentifier,
+       let container = fileManager.containerURL(forSecurityApplicationGroupIdentifier: groupId) {
+        baseDirectory = container
+    } else {
+        baseDirectory = fileManager.temporaryDirectory
+    }
+
+    let dir = baseDirectory.appendingPathComponent("share_extension", isDirectory: true)
+    try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}()
 
 /// An NSItemProvider wrapper that can be encoded and sent between extensions and main app process
 public enum CodableNSItemProvider: Codable {

@@ -2,16 +2,17 @@ import Foundation
 public class DatabaseHelper {
 
     /// The application group identifier defines a group of apps or extensions that have access to a shared container.
-    /// The ID is created in the apple developer portal and can be changed there.
-    static let applicationGroupIdentifier = "group.chat.delta.ios"
+    ///
+    /// We read this value from the app's entitlements at runtime so local forks can run without hardcoding
+    /// Delta Chat's App Group identifier.
+    public static var applicationGroupIdentifier: String? {
+        DcSharedContainer.applicationGroupIdentifier
+    }
 
     public init() {}
 
     public var sharedDbFile: String {
-        guard let fileContainer = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: DatabaseHelper.applicationGroupIdentifier) else {
-            return ""
-        }
-        let storeURL = fileContainer.appendingPathComponent("messenger.db")
+        let storeURL = DcSharedContainer.containerURL().appendingPathComponent("messenger.db")
         return storeURL.path
     }
 
