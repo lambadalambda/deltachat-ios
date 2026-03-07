@@ -59,6 +59,29 @@ rustup toolchain install `cat rust-toolchain`
 pod install
 ```
 
+### Local fork: minimal Xcode
+
+If you're not on the Delta Chat Apple Developer team but want to run a local fork on your own device,
+you can patch the bundle identifiers / team id once and then use the CLI for build+install.
+
+```bash
+cd deltachat-ios
+
+# one-time: dependencies
+git submodule update --init --recursive
+pod install
+
+# one-time: patch signing + App Group identifiers
+scripts/local-fork-setup.sh --team-id ABCDE12345 --bundle-id com.example.deltachat --display-name "DeltaChat Dev"
+
+# build + install + launch
+scripts/run-on-device.sh --device "<your iPhone name or udid>"
+```
+
+Notes:
+- App Groups must exist in your Apple Developer account. The script defaults to `group.<bundle-id>`.
+- The app will fall back to its sandbox container if no App Group entitlement is available, but extensions won't share data in that case.
+
 To run the project, open `deltachat-ios.xcworkspace` (**not** the 'xcodeproj' file).
 
 ```bash
