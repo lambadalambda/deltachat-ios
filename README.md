@@ -78,6 +78,19 @@ scripts/local-fork-setup.sh --team-id ABCDE12345 --bundle-id com.example.deltach
 scripts/run-on-device.sh --device "<your iPhone name or udid>"
 ```
 
+With `mise`, the same local fork workflow can be run with:
+
+```bash
+# one-time, if prompted
+mise trust .mise.toml
+
+# setup local signing patch
+IOS_TEAM_ID=ABCDE12345 IOS_BUNDLE_ID=com.example.deltachat mise run ios-local-fork-setup
+
+# build + install + launch (auto-select device if only one is paired)
+mise run ios-run-on-device
+```
+
 Notes:
 - App Groups must exist in your Apple Developer account. The script defaults to `group.<bundle-id>`.
 - The app will fall back to its sandbox container if no App Group entitlement is available, but extensions won't share data in that case.

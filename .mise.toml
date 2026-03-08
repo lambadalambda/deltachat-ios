@@ -1,0 +1,63 @@
+[tasks.ios-test-agent-progress-parser]
+description = "Run parser tests for agent progress messages"
+run = """
+destination="${IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone SE (3rd generation)}"
+
+xcodebuild \
+  -workspace "deltachat-ios.xcworkspace" \
+  -scheme "deltachat-ios" \
+  -destination "$destination" \
+  test \
+  -only-testing:DcTests/AgentProgressMessageParserTests
+"""
+
+[tasks.ios-build]
+description = "Build iOS app for generic iOS destination"
+run = """
+xcodebuild \
+  -workspace "deltachat-ios.xcworkspace" \
+  -scheme "deltachat-ios" \
+  -destination "generic/platform=iOS" \
+  build
+"""
+
+[tasks.ios-list-devices]
+description = "List paired iOS and iPadOS devices"
+run = "xcrun devicectl list devices --columns \"deviceProperties.name\" --columns \"hardwareProperties.platform\" --columns \"hardwareProperties.udid\" --quiet"
+
+[tasks.ios-local-fork-setup]
+description = "Patch signing and bundle IDs for a local fork"
+run = """
+if [ -z "${IOS_TEAM_ID:-}" ] || [ -z "${IOS_BUNDLE_ID:-}" ]; then
+  echo "Set IOS_TEAM_ID and IOS_BUNDLE_ID before running this task." >&2
+  echo "Optional: IOS_APP_GROUP_ID, IOS_DISPLAY_NAME" >&2
+  exit 2
+fi
+
+if [ -n "${IOS_APP_GROUP_ID:-}" ] && [ -n "${IOS_DISPLAY_NAME:-}" ]; then
+  scripts/local-fork-setup.sh --team-id "$IOS_TEAM_ID" --bundle-id "$IOS_BUNDLE_ID" --app-group-id "$IOS_APP_GROUP_ID" --display-name "$IOS_DISPLAY_NAME"
+elif [ -n "${IOS_APP_GROUP_ID:-}" ]; then
+  scripts/local-fork-setup.sh --team-id "$IOS_TEAM_ID" --bundle-id "$IOS_BUNDLE_ID" --app-group-id "$IOS_APP_GROUP_ID"
+elif [ -n "${IOS_DISPLAY_NAME:-}" ]; then
+  scripts/local-fork-setup.sh --team-id "$IOS_TEAM_ID" --bundle-id "$IOS_BUNDLE_ID" --display-name "$IOS_DISPLAY_NAME"
+else
+  scripts/local-fork-setup.sh --team-id "$IOS_TEAM_ID" --bundle-id "$IOS_BUNDLE_ID"
+fi
+"""
+
+[tasks.ios-run-on-device]
+description = "Build install and launch on a physical device"
+run = """
+configuration="${IOS_CONFIGURATION:-Debug}"
+
+if [ -n "${IOS_DEVICE:-}" ]; then
+  scripts/run-on-device.sh --device "$IOS_DEVICE" --configuration "$configuration"
+else
+  scripts/run-on-device.sh --configuration "$configuration"
+fi
+"""
+
+[tasks.ios-local-fork-and-run]
+description = "Apply local fork setup and run on device"
+depends = ["ios-local-fork-setup", "ios-run-on-device"]
+run = "echo \"Local fork setup applied and app launched\""
