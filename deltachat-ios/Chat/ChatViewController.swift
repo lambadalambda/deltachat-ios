@@ -18,6 +18,7 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
     private var contextMenuVisible = false
     private var expandedHtmlMessageTextById: [Int: String] = [:]
     private var expandingHtmlMessageIds: Set<Int> = []
+    private var expandedAgentProgressMessageIds: Set<Int> = []
 
     private lazy var draft: DraftModel = {
         return DraftModel(dcContext: dcContext, chatId: chatId)
@@ -52,6 +53,7 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
         tableView.dataSource = self
         tableView.backgroundView = backgroundContainer
         tableView.register(TextMessageCell.self, forCellReuseIdentifier: TextMessageCell.reuseIdentifier)
+        tableView.register(AgentProgressMessageCell.self, forCellReuseIdentifier: AgentProgressMessageCell.reuseIdentifier)
         tableView.register(ImageTextCell.self, forCellReuseIdentifier: ImageTextCell.reuseIdentifier)
         tableView.register(FileTextCell.self, forCellReuseIdentifier: FileTextCell.reuseIdentifier)
         tableView.register(InfoMessageCell.self, forCellReuseIdentifier: InfoMessageCell.reuseIdentifier)
@@ -615,6 +617,17 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
             }
         case DC_MSG_VCARD:
             cell = dequeueCell(ofType: ContactCardCell.self)
+        case DC_MSG_TEXT:
+            if let progressMessage = parsedAgentProgressMessage(for: message) {
+                let progressCell = dequeueCell(ofType: AgentProgressMessageCell.self)
+                progressCell.configureAgentProgress(
+                    progressMessage,
+                    isExpanded: expandedAgentProgressMessageIds.contains(message.id)
+                )
+                cell = progressCell
+            } else {
+                cell = dequeueCell(ofType: TextMessageCell.self)
+            }
         default:
             cell = dequeueCell(ofType: TextMessageCell.self)
         }
@@ -977,6 +990,7 @@ class ChatViewController: UIViewController, UITableViewDelegate, UITableViewData
         let visibleMessageIds = Set(messages.map(\.id))
         expandedHtmlMessageTextById = expandedHtmlMessageTextById.filter { visibleMessageIds.contains($0.key) }
         expandingHtmlMessageIds = Set(expandingHtmlMessageIds.filter { visibleMessageIds.contains($0) })
+        expandedAgentProgressMessageIds = Set(expandedAgentProgressMessageIds.filter { visibleMessageIds.contains($0) })
     }
 
     private func canReply(to message: DcMsg) -> Bool {
@@ -2217,6 +2231,17 @@ extension ChatViewController {
         expandedHtmlMessageTextById[message.id] ?? message.text
     }
 
+    private func parsedAgentProgressMessage(for message: DcMsg) -> AgentProgressMessage? {
+        guard message.type == DC_MSG_TEXT,
+              !message.hasHtml,
+              message.downloadState == DC_DOWNLOAD_DONE,
+              let text = displayedMessageText(for: message)
+        else {
+            return nil
+        }
+        return AgentProgressMessage.parse(from: text)
+    }
+
     private func reloadRow(for messageId: Int) {
         guard let row = messages.firstIndex(where: { $0.id == messageId }) else { return }
         guard row < tableView.numberOfRows(inSection: 0) else { return }
@@ -2252,6 +2277,15 @@ extension ChatViewController {
                 self.reloadRow(for: messageId)
             }
         }
+    }
+
+    private func toggleAgentProgressCalls(messageId: Int) {
+        if expandedAgentProgressMessageIds.contains(messageId) {
+            expandedAgentProgressMessageIds.remove(messageId)
+        } else {
+            expandedAgentProgressMessageIds.insert(messageId)
+        }
+        reloadRow(for: messageId)
     }
 
     private func copyTextToClipboard(ids: [Int]) {
@@ -2312,6 +2346,8 @@ extension ChatViewController: BaseMessageCellDelegate {
             showWebxdcViewFor(message: msg)
         } else if msg.hasHtml {
             expandHtmlMessageInline(messageId: msg.id)
+        } else if let progressMessage = parsedAgentProgressMessage(for: msg), progressMessage.calls.count > 1 {
+            toggleAgentProgressCalls(messageId: msg.id)
         } else {
             logger.info("Ignoring message action button tap without matching action")
         }
@@ -2966,5 +3002,253 @@ enum HtmlMessageTextExtractor {
             .replacingOccurrences(of: "[ \\t]*\\n[ \\t]*", with: "\n", options: .regularExpression)
             .replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct AgentProgressMessage: Equatable {
+    enum State: Equatable {
+        case thinking
+        case running
+        case done
+        case failed
+        case cancelled
+    }
+
+    struct Call: Equatable {
+        enum Status: Equatable {
+            case run
+            case ok
+            case err
+            case cancel
+        }
+
+        let seq: Int
+        let status: Status
+        let tool: String
+        let label: String?
+
+        var formattedText: String {
+            guard let label, !label.isEmpty else {
+                return tool
+            }
+            return "\(tool) - \(label)"
+        }
+    }
+
+    let version: Int
+    let runId: String?
+    let state: State
+    let currentTool: String?
+    let calls: [Call]
+
+    var isActive: Bool {
+        state == .thinking || state == .running
+    }
+
+    var collapsedText: String {
+        if let call = collapsedCall {
+            return call.formattedText
+        }
+
+        if let currentTool, !currentTool.isEmpty {
+            return currentTool
+        }
+
+        switch state {
+        case .thinking:
+            return "thinking"
+        case .running:
+            return "running"
+        case .done:
+            return "done"
+        case .failed:
+            return "failed"
+        case .cancelled:
+            return "cancelled"
+        }
+    }
+
+    private var collapsedCall: Call? {
+        guard !calls.isEmpty else {
+            return nil
+        }
+
+        if isActive {
+            return calls.last(where: { $0.status == .run })
+        }
+
+        return calls.last
+    }
+
+    static func parse(from text: String) -> AgentProgressMessage? {
+        let trimmedLeading = text.replacingOccurrences(
+            of: "^\\s+",
+            with: "",
+            options: .regularExpression
+        )
+        guard trimmedLeading.hasPrefix("Agent progress (v1") else {
+            return nil
+        }
+
+        let normalizedText = trimmedLeading
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalizedText.components(separatedBy: "\n")
+
+        guard let headerLine = lines.first?.trimmingCharacters(in: .whitespaces),
+              !headerLine.isEmpty,
+              let headerMatch = headerLine.wholeMatch(
+                pattern: "^Agent progress \\(v(\\d+)(?:,\\s*run=([^)]+))?\\):\\s*([A-Za-z]+)(?:\\s+(.+))?$"
+              ),
+              let versionLiteral = headerMatch[0],
+              let version = Int(versionLiteral)
+        else {
+            return nil
+        }
+
+        guard version == 1,
+              let rawState = headerMatch[2],
+              let state = normalizeState(rawState)
+        else {
+            return nil
+        }
+
+        guard let calls = parseCalls(lines) else {
+            return nil
+        }
+
+        let runId = headerMatch[1]?.trimmingCharacters(in: .whitespaces)
+        let currentTool = headerMatch[3]?.trimmingCharacters(in: .whitespaces)
+
+        return AgentProgressMessage(
+            version: version,
+            runId: runId?.isEmpty == true ? nil : runId,
+            state: state,
+            currentTool: currentTool?.isEmpty == true ? nil : currentTool,
+            calls: calls
+        )
+    }
+
+    private static func normalizeState(_ rawState: String) -> State? {
+        switch rawState.lowercased() {
+        case "thinking":
+            return .thinking
+        case "running":
+            return .running
+        case "done":
+            return .done
+        case "failed", "error":
+            return .failed
+        case "cancelled", "canceled":
+            return .cancelled
+        default:
+            return nil
+        }
+    }
+
+    private static func parseCalls(_ lines: [String]) -> [Call]? {
+        let callsHeaderIndex = lines.firstIndex { line in
+            line.trimmingCharacters(in: .whitespaces).lowercased() == "calls:"
+        }
+
+        guard let callsHeaderIndex else {
+            for line in lines.dropFirst() where !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                return nil
+            }
+            return []
+        }
+
+        for line in lines.dropFirst().prefix(callsHeaderIndex - 1)
+        where !line.trimmingCharacters(in: .whitespaces).isEmpty {
+            return nil
+        }
+
+        var calls: [Call] = []
+        for line in lines.dropFirst(callsHeaderIndex + 1) {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                continue
+            }
+
+            guard let lineMatch = line.wholeMatch(
+                pattern: "^\\s*(\\d+)\\.\\s+([A-Za-z]+)\\s+(.+)$"
+            ),
+                  let seqLiteral = lineMatch[0],
+                  let seq = Int(seqLiteral),
+                  let rawStatus = lineMatch[1],
+                  let status = normalizeCallStatus(rawStatus),
+                  let rawPayload = lineMatch[2],
+                  let payload = parseCallPayload(rawPayload)
+            else {
+                return nil
+            }
+
+            calls.append(Call(seq: seq, status: status, tool: payload.tool, label: payload.label))
+        }
+
+        return calls
+    }
+
+    private static func normalizeCallStatus(_ rawStatus: String) -> Call.Status? {
+        switch rawStatus.lowercased() {
+        case "run", "running":
+            return .run
+        case "ok", "done":
+            return .ok
+        case "err", "error", "fail":
+            return .err
+        case "cancel", "cancelled", "canceled":
+            return .cancel
+        default:
+            return nil
+        }
+    }
+
+    private static func parseCallPayload(_ rawPayload: String) -> (tool: String, label: String?)? {
+        let payload = rawPayload.trimmingCharacters(in: .whitespaces)
+        guard !payload.isEmpty else {
+            return nil
+        }
+
+        let separators = [" - ", " – ", " — "]
+        for separator in separators {
+            if let range = payload.range(of: separator) {
+                let tool = String(payload[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+                let label = String(payload[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+
+                guard !tool.isEmpty else {
+                    return nil
+                }
+
+                return (tool, label.isEmpty ? nil : label)
+            }
+        }
+
+        return (payload, nil)
+    }
+}
+
+private extension String {
+    func wholeMatch(pattern: String) -> [String?]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let range = NSRange(location: 0, length: utf16.count)
+        guard let match = regex.firstMatch(in: self, options: [], range: range),
+              match.range == range
+        else {
+            return nil
+        }
+
+        return (1..<match.numberOfRanges).map { index in
+            let captureRange = match.range(at: index)
+            guard captureRange.location != NSNotFound,
+                  let range = Range(captureRange, in: self)
+            else {
+                return nil
+            }
+
+            return String(self[range])
+        }
     }
 }

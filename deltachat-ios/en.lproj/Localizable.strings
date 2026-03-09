@@ -65,6 +65,13 @@
 "main_menu" = "Main Menu";
 "start_chat" = "Start Chat";
 "show_full_message" = "Show Full Message…";
+"agent_progress_show_calls" = "Calls (%1$d)";
+"agent_progress_hide_calls" = "Hide calls";
+"agent_progress_status_thinking" = "thinking";
+"agent_progress_status_running" = "running";
+"agent_progress_status_ok" = "ok";
+"agent_progress_status_failed" = "failed";
+"agent_progress_status_cancelled" = "cancelled";
 // Stay short here, say ~16 characters. The source string could also be "All Read", maybe that hint can make translations easier :)
 "mark_all_as_read" = "Mark All as Read";
 "mark_as_read" = "Mark as Read";
